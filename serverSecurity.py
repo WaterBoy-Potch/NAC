@@ -1,37 +1,35 @@
-import socket
-import json
-import os
-import ssl
-from threading import Lock, Thread
-import logging
-import time
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
-import datetime
+import socket                     # Network communication
+import json                       # JSON data handling
+import os                         # System commands
+import ssl                        # SSL/TLS security
+from threading import Lock, Thread  # Thread safety and background tasks
+import logging                    # Event logging
+import time                       # Timing for broadcasts
+from cryptography import x509     # SSL certificate creation
+from cryptography.hazmat.primitives import hashes, serialization  # Certificate details
+from cryptography.hazmat.primitives.asymmetric import rsa  # RSA key generation
+from cryptography.x509.oid import NameOID  # Certificate naming
+import datetime                   # Certificate validity dates
 
 # File paths and constants
 credentialsFile = "A:\\serverData\\credentials.txt"
-sharedFolder = "A:\\"  # Root of the A: drive, shared as "WaterBoy LS"
+sharedFolder = "A:\\"  # Root of A: drive
 adminKey = "SECRET_ADMIN_KEY_123"
 whitelist = {"00:11:22:33:44:55"}
 certFile = "A:\\serverData\\server.crt"
 keyFile = "A:\\serverData\\server.key"
 
-# Global state variables
+# Global state variables (reset on startup)
 failedAttempts = {}
 isLocked = False
 threadLock = Lock()
 
 # Configure logging
-logging.basicConfig(
-    filename="A:\\serverData\\server.log", level=logging.INFO,
-    format= "%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(filename="A:\\serverData\\server.log", level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
 
 def generateSelfSignedCert():
-    # Generate SSL certificate and key if they don't exist
+    # Generate SSL certificate and key if missing
     if not (os.path.exists(certFile) and os.path.exists(keyFile)):
         privateKey = rsa.generate_private_key(
             public_exponent=65537,
@@ -39,7 +37,7 @@ def generateSelfSignedCert():
         )
 
         subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "WaterBoy LS"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "WaterBoy LS Server"),
         ])
         cert = x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(
             privateKey.public_key()
@@ -54,13 +52,18 @@ def generateSelfSignedCert():
             critical=False
         ).sign(privateKey, hashes.SHA256())
 
-        # Save private key
-        with open(certFile, "wb") as f:
+        with open(keyFile, "wb") as f:  # Save private key
+            f.write(privateKey.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+        with open(certFile, "wb") as f:  # Save certificate
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         logging.info("Generated self-signed SSL certificate and key.")
 
 def getServerIp():
-    # Get server's IP Address
+    # Get server’s IP address
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('8.8.8.8', 80))
@@ -79,16 +82,16 @@ def broadcastServerIp():
     message = json.dumps({"serverName": "WaterBoy LS", "ip": serverIp}).encode()
 
     while True:
-            try:
-                udpSocket.sendto(message, ('255.255.255.255', 8888))
-                logging.info(f"Broadcasting error: {str(e)}")
-                time.sleep(5)
-            except Exception as e:
-                logging.error(f"Broadcast error: {str(e)}")
-                time.sleep(5)
+        try:
+            udpSocket.sendto(message, ('255.255.255.255', 8888))
+            logging.info(f"Broadcasting server IP: {serverIp}")
+            time.sleep(5)
+        except Exception as e:
+            logging.error(f"Broadcast error: {str(e)}")
+            time.sleep(5)
 
 def loadCredentials():
-    # Load MAC/password credentials from file
+    # Load MAC/password credentials
     credentials = {}
     if os.path.exists(credentialsFile):
         with open(credentialsFile, "r") as f:
@@ -108,7 +111,7 @@ def lockSharedFolder():
         logging.info("Shared drive locked and all devices disconnected.")
 
 def unlockSharedFolder():
-    # Unloc the shared drive
+    # Unlock the shared drive
     global isLocked
     with threadLock:
         isLocked = False
@@ -124,18 +127,25 @@ def handleRequest(data):
     macAddress = data.get("mac")
     password = data.get("password")
 
+    if action == "logout" and macAddress:  # Handle client logout
+        with threadLock:
+            if macAddress in failedAttempts:
+                del failedAttempts[macAddress]  # Clear client’s failed attempts
+        logging.info(f"Client {macAddress} logged out.")
+        return {"status": "success", "message": "Logged out"}
+
     if macAddress in whitelist:
         unlockSharedFolder()
         logging.info(f"Whitelisted MAC {macAddress} granted access.")
-        return {"status": "success", "message": "Access granted."}
-    
+        return {"status": "success", "message": "Access granted (whitelisted)"}
+
     if isLocked:
         logging.warning(f"Access attempt by {macAddress} while server locked.")
         return {"status": "locked", "message": "Server is Locked. Contact IT/Admin."}
-    
+
     if action == "unlock":
         credentials = loadCredentials()
-        if macAddress in credentials[macAddress] == password:
+        if macAddress in credentials and credentials[macAddress] == password:
             unlockSharedFolder()
             failedAttempts[macAddress] = 0
             logging.info(f"Access granted to {macAddress}.")
@@ -144,7 +154,7 @@ def handleRequest(data):
             with threadLock:
                 failedAttempts[macAddress] = failedAttempts.get(macAddress, 0) + 1
                 attempts = failedAttempts[macAddress]
-                logging.warning(f"Failed attempt {attempts} by {macAddress}")
+                logging.warning(f"Failed attempt {attempts} by {macAddress}.")
             if attempts == 2:
                 return {"status": "warning", "message": "Wrong credentials. 2 attempts failed. Contact IT/Admin."}
             elif attempts >= 3:
@@ -152,26 +162,25 @@ def handleRequest(data):
                 return {"status": "locked", "message": "Server locked after 3 failed attempts. Contact IT/Admin."}
             else:
                 return {"status": "error", "message": "Incorrect password"}
-            
+
     elif action == "admin_unlock" and password == adminKey:
         unlockSharedFolder()
         failedAttempts.clear()
         logging.info("Server unlocked by admin.")
-        return {"status": "success", "message": "Server unlocked by admin."}
+        return {"status": "success", "message": "Server unlocked by admin"}
 
     return {"status": "error", "message": "Invalid request"}
 
-# Main execution starts here
+# Main execution
 serverIp = getServerIp()
 logging.info(f"Server starting with IP: {serverIp}")
 
 generateSelfSignedCert()
 
-# Start IP broadcasting in a thread
-broadcastThread = Thread(target=broadcastServerIp, daemon=True)
+broadcastThread = Thread(target=broadcastServerIp, daemon=True)  # Start IP broadcast
 broadcastThread.start()
 
-# Set up SSL-secured TCP server
+# Set up SSL TCP server
 serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 sslContext = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
 sslContext.load_cert_chain(certfile=certFile, keyfile=keyFile)
@@ -180,15 +189,13 @@ serverSocket.bind(('0.0.0.0', 9999))
 serverSocket.listen(5)
 logging.info("Server running on port 9999 with SSL...")
 
-# Handle incoming connections
 while True:
     try:
-        clientSocket, addr = serverSocket.accept()
-        data = clientSocket.recv(1024).decode()
+        clientSocket, addr = serverSocket.accept()  # Accept connection
+        data = clientSocket.recv(1024).decode()  # Receive data
         request = json.loads(data)
-        response = handleRequest(request)
-        clientSocket.send(json.dumps(response).encode())
-        clientSocket.close()
+        response = handleRequest(request)  # Process request
+        clientSocket.send(json.dumps(response).encode())  # Send response
+        clientSocket.close()  # Close connection
     except Exception as e:
         logging.error(f"Server error: {str(e)}")
-        
