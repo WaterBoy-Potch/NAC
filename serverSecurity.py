@@ -10,14 +10,11 @@ from cryptography.hazmat.primitives import hashes, serialization  # Certificate 
 from cryptography.hazmat.primitives.asymmetric import rsa  # RSA key generation
 from cryptography.x509.oid import NameOID  # Certificate naming
 import datetime                   # Certificate validity dates
+import paths                      # Import centralized paths
 
-# File paths and constants
-credentialsFile = "A:\\serverData\\credentials.txt"
-sharedFolder = "A:\\"  # Root of A: drive
+# Configuration constants
 adminKey = "SECRET_ADMIN_KEY_123"
-whitelist = {"00:11:22:33:44:55"}
-certFile = "A:\\serverData\\server.crt"
-keyFile = "A:\\serverData\\server.key"
+whitelist = {"00:11:22:33:44:55"}  # Whitelisted MAC addresses
 
 # Global state variables (reset on startup)
 failedAttempts = {}
@@ -25,12 +22,12 @@ isLocked = False
 threadLock = Lock()
 
 # Configure logging
-logging.basicConfig(filename="A:\\serverData\\server.log", level=logging.INFO,
+logging.basicConfig(filename=paths.SERVER_LOG_FILE, level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 
 def generateSelfSignedCert():
     # Generate SSL certificate and key if missing
-    if not (os.path.exists(certFile) and os.path.exists(keyFile)):
+    if not (os.path.exists(paths.SERVER_CERT_FILE) and os.path.exists(paths.SERVER_KEY_FILE)):
         privateKey = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048
@@ -52,13 +49,13 @@ def generateSelfSignedCert():
             critical=False
         ).sign(privateKey, hashes.SHA256())
 
-        with open(keyFile, "wb") as f:  # Save private key
+        with open(paths.SERVER_KEY_FILE, "wb") as f:  # Save private key
             f.write(privateKey.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.TraditionalOpenSSL,
                 encryption_algorithm=serialization.NoEncryption()
             ))
-        with open(certFile, "wb") as f:  # Save certificate
+        with open(paths.SERVER_CERT_FILE, "wb") as f:  # Save certificate
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         logging.info("Generated self-signed SSL certificate and key.")
 
@@ -93,8 +90,8 @@ def broadcastServerIp():
 def loadCredentials():
     # Load MAC/password credentials
     credentials = {}
-    if os.path.exists(credentialsFile):
-        with open(credentialsFile, "r") as f:
+    if os.path.exists(paths.SERVER_CREDENTIALS_FILE):
+        with open(paths.SERVER_CREDENTIALS_FILE, "r") as f:
             for line in f:
                 mac, pwd = line.strip().split(",")
                 credentials[mac] = pwd
@@ -105,7 +102,7 @@ def lockSharedFolder():
     global isLocked
     with threadLock:
         isLocked = True
-        os.system(f'icacls "{sharedFolder}" /deny "Everyone:(F)"')
+        os.system(f'icacls "{paths.SERVER_SHARED_FOLDER}" /deny "Everyone:(F)"')
         os.system(f'net share "WaterBoy LS" /delete')
         os.system("net session /delete")
         logging.info("Shared drive locked and all devices disconnected.")
@@ -115,8 +112,8 @@ def unlockSharedFolder():
     global isLocked
     with threadLock:
         isLocked = False
-        os.system(f'icacls "{sharedFolder}" /grant "Everyone:(F)"')
-        os.system(f'net share "WaterBoy LS"="{sharedFolder}" /grant:Everyone,FULL')
+        os.system(f'icacls "{paths.SERVER_SHARED_FOLDER}" /grant "Everyone:(F)"')
+        os.system(f'net share "WaterBoy LS"="{paths.SERVER_SHARED_FOLDER}" /grant:Everyone,FULL')
         logging.info("Shared drive unlocked and shared.")
 
 def handleRequest(data):
@@ -183,7 +180,7 @@ broadcastThread.start()
 # Set up SSL TCP server
 serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 sslContext = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-sslContext.load_cert_chain(certfile=certFile, keyfile=keyFile)
+sslContext.load_cert_chain(certfile=paths.SERVER_CERT_FILE, keyfile=paths.SERVER_KEY_FILE)
 serverSocket = sslContext.wrap_socket(serverSocket, server_side=True)
 serverSocket.bind(('0.0.0.0', 9999))
 serverSocket.listen(5)
